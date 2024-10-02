@@ -295,9 +295,9 @@ function onTick()
 --TARGET SELECTION
  --Select Target
 	near = {0,0}
-	if touchx>9 then
+	if touchx>9 then --used for target selection
 		if tap then
-			for k,v in pairs(tracks) do
+			for k,v in pairs(tracks) do --finds closest track to cursor
 				if k~=1 then
 					range = vec_sub(touch,v)
 					range = m.sqrt(range.x^2+range.z^2)
@@ -306,7 +306,7 @@ function onTick()
 				end
 			end
 		end
-	elseif tapcount>0 then
+	elseif tapcount>0 then --Controls map zone and reset
 		if m.abs(touchy-mult)<rge then
 			if tapcount>7 then
 				rdrdist = m.max(rdrdist-.05,1)
