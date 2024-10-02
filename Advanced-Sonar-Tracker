@@ -2,7 +2,6 @@
 --SHORTHAND NOTATIONS
 m=math
 s=screen
---tau=m.pi*2
 t=table.insert
 IN=input.getNumber
 IB=input.getBool
