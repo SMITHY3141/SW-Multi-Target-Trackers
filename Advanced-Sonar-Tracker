@@ -1,0 +1,401 @@
+--By SMITHY, Active Sonar Radar
+--SHORTHAND NOTATIONS
+m=math
+s=screen
+--tau=m.pi*2
+t=table.insert
+IN=input.getNumber
+IB=input.getBool
+ON=output.setNumber
+PN=property.getNumber
+OB=output.setBool
+
+--VECTOR FUNCTIONS
+vec=function(x,y,z) return {x=x,y=y,z=z} end
+function vec_add(A,B) return vec(A.x+B.x,A.y+B.y,A.z+B.z) end
+function vec_sub(A,B) return vec(A.x-B.x,A.y-B.y,A.z-B.z) end
+function vec_mult(A,n) return vec(A.x*n,A.y*n,A.z*n) end
+function vec_length(vec) return m.sqrt(vec.x*vec.x+vec.y*vec.y+vec.z*vec.z) end
+
+function lopatin(a) --not my function, first created by lopatin
+	local n = #a
+	local m = #a[1]
+	local INF = 100000000
+	
+	local function vec(size, val)
+		local v = {}
+		for i = 1, size do v[i] = val end
+		return v  
+	end
+	
+	local u = vec(n+1,0)
+	local v = vec(m+1,0)
+	local p = vec(m+1,1)
+	local way = vec(m+1,0)
+	
+	for i = 1, n do
+		p[1] = i
+		local j0 = 1
+		local minv = vec(m+1, INF)
+		local used = vec(m+1, false)
+		
+		repeat
+			used[j0] = true
+			local i0 = p[j0]
+			local delta = INF
+			local j1
+			for j = 2, m do
+				if used[j] ~= true then
+					local cur = a[i0][j]-u[i0]-v[j]
+					if cur < minv[j] then
+						minv[j] = cur
+						way[j] = j0
+					end
+					if minv[j] < delta then
+						delta = minv[j]
+						j1 = j
+					end	
+				end
+			end
+			for j = 1, m do
+				if used[j] == true then
+					u[p[j]] = u[p[j]] + delta
+					v[j] = v[j] - delta 
+				else
+					minv[j] = minv[j] - delta
+				end 
+				j0=j1
+			end
+		until p[j0] == 1
+		
+		repeat 
+			local j1 = way[j0]
+			p[j0] = p[j1]
+			j0 = j1
+		until j0 == 1  
+	end
+	
+	local ans = {}
+	for j=2, m do
+		ans[p[j]] = j
+	end
+	return ans
+end
+
+--SET INITIAL VARIABLES
+set=vec(0,0,0)
+targets,tick,tracks={},{0},{0} --targets is for keeping a record of selected targets, tick is used to delete targets if they haven't been detected for x scans
+minrng=PN("MinRange")
+timeout=PN("Decay")
+sep=PN("S")
+stt=PN("M")
+
+--UI stuff
+lx = PN("X")*32
+lz = PN("Y")*32
+gz = lz/2
+r=gz-3
+gx=4.5+lx/2
+ma=set
+out=0
+count=1
+tapcount=0
+
+--Configure Sonar setup
+sonarcount = 3 --how many sonars?
+per = 2 --how many targets are you reading from each?
+ret = 6 --what radar distance would you like to be the default?
+
+--UI stuff to scale and slew
+rdrdist = ret --this controls the radar distance
+scl=ret --this controls the zoom in km
+mult=lz/5
+rge=mult/2
+
+--A seperate counter for each sonar, used for distance calculations
+counter = {}
+for i=0,sonarcount do
+	counter[i] = 0
+end
+counto=0 --Used to determine when the next ping should be sent
+
+file = {}--Each sonar gets to build up a list of detections before updating tracks
+
+function onTick()
+    rx,ry,rz=IN(28),IN(29),IN(30)
+    cx,cy,cz=m.cos(rx),m.cos(ry),m.cos(rz)
+    sx,sy,sz=m.sin(rx),m.sin(ry),m.sin(rz)
+    Xn = vec(cy*cz,cy*sz,-sy)--right
+    Yn = vec(-cx*sz+sx*sy*cz,cx*cz+sx*sy*sz,sx*cy)--up
+	Zn = vec(sx*sz+cx*sy*cz,-sx*cz+cx*sy*sz,cx*cy)--forwards
+
+	mpos = vec(IN(25),IN(26),IN(27))--y IN(26) is up
+
+	--UI slew stuff
+	ma = vec_add(ma,vec_mult(vec(IN(23),0,IN(24)),50*scl))
+	mx = mpos.x+ma.x
+	mz = mpos.z+ma.z
+	ON(6,mx)
+	ON(7,mz)
+	mscl=scl/(r/lx)
+	aposx,aposz=map.screenToMap(mx,mz,mscl,lx,lz,lx-gx,lz-gz)
+	mx,mz=map.mapToScreen(aposx,aposz,mscl,lx,lz,mpos.x,mpos.z)
+
+	touchx = IN(31)
+	touchy = IN(32)
+	mscl=scl*1000/r
+	touch = vec_add(vec_mult(vec(touchx-mx,0,mz-touchy),mscl),mpos)
+
+
+	--For how many ticks does the sonar travel for at the current range? -1 resets the sonars on startup
+	limit = ping and rdrdist*60/.74+6 or -1
+
+	ping = IB(1)
+	if ping then
+--PING TIMING
+		for i = 1,sonarcount do
+			if counter[i] == 0 then
+				if counto>limit/sonarcount then --waits for a free slot to open up to ping
+					counter[i] = 1
+					counto = -1
+				end
+				file[i] = {0}
+
+			elseif counter[i]>limit then
+				counter[i]=0
+				list = file[i]
+				OB(i,false)
+
+			else
+				OB(i,true)
+				counter[i] = counter[i] + 1
+
+			end
+			ON(i+11,counter[i])--used for UI stuff in another script
+		end
+		counto = counto+1
+--NEW DETECTIONS
+		for i = 1,sonarcount*per do
+ --Calculate Target Coordinates in World Space
+			radarh,radarv=IN(i*2-1)*m.pi*2,IN(i*2)*m.pi*2
+			if radarh~=0 then
+				ID = m.ceil(i/per)--which sonar is this data from?
+				dist = 740*(counter[ID]-6)/60
+				if dist>minrng then
+					hlen = dist*m.cos(radarv)
+					radar = vec(m.sin(radarh)*hlen,m.sin(radarv)*dist,m.cos(radarh)*hlen)
+					radar = vec_add(vec_add(vec_add(vec_mult(Xn,radar.x),vec_mult(Yn,radar.y)),vec_mult(Zn,radar.z)),mpos)--xyz coords (y is up)
+
+					for k,v in ipairs(file[ID]) do
+						if k~=1 then
+							local range = vec_length(vec_sub(radar,v))
+							if range<150 then --merge detections closer than this (had problems with multiple returns from the same track)
+								file[ID][k] = radar
+								radar = nil
+								break
+
+							end
+						end
+					end
+					if radar ~= nil then
+						t(file[ID],radar)
+
+					end
+				end
+			end
+		end
+
+--TRACK ASSIGNMENT MANAGEMENT
+		if list~=nil then
+			munkres,maxlen,minlen={},0,0
+
+ --Calculate Table Length
+			for k,v in pairs(tracks) do 
+				maxlen = m.max(k,maxlen)
+				minlen = minlen+1
+
+			end
+
+ --Construct Detection-Track Distance Matrix
+			flip = #list>=minlen
+			for k=1,(flip and maxlen or #list) do
+				local row = {}
+				if flip then
+					if tracks[k]~=nil then
+						row[-1] = k
+						for l,o in ipairs(list) do
+							row[l] = (k == 1 or l == 1) and 0 or vec_length(vec_sub(o,tracks[k]))
+
+						end
+						t(munkres,row)
+					end
+				else
+					step = 1
+					munkres[-1] = {}
+					for v = 1,maxlen do
+						if tracks[v]~=nil then
+							munkres[-1][step] = v
+							row[step]=(k == 1 or v == 1) and 0 or vec_length(vec_sub(list[k],tracks[v]))
+							step=step+1
+
+						end
+					end
+					t(munkres,row)
+				end
+			end
+
+ --Solve for Closest Targets (for an nxm matrix: n>=m, (n and m)>1, and the first row and column must be all zeroes)
+			ans =  #list~=1 and lopatin(munkres) or {0}
+
+ --Update Track Positions
+			for row,col in pairs(ans) do
+				if row~=1 then
+					if munkres[row][col]<sep then
+					if flip then
+						row = munkres[row][-1]
+						tracks[row] = vec(list[col].x,list[col].y,list[col].z)
+						list[col] = nil
+						tick[row] = 0
+
+					else
+						col = munkres[-1][col]
+						tracks[col] = vec(list[row].x,list[row].y,list[row].z)
+						tick[col] = 0
+
+					end
+					end
+				end
+			end
+
+ --Add New Tracks
+			if flip then
+				for k,v in pairs(list) do
+					if k~=1 then
+						t(tracks,v)
+						t(tick,0)
+
+					end
+				end
+			end
+			list = nil
+
+ --Calculate Track Timeouts
+			for k,v in pairs(tick) do
+				if k~=1 then
+					tick[k] = v+1
+					if v>timeout then
+						tracks[k]=nil
+						tick[k]=nil
+
+					end
+				end
+			end
+		end
+	end
+
+--TARGET SELECTION
+ --Select Target
+	near = {0,0}
+	if touchx>9 then
+		if tap then
+			for k,v in pairs(tracks) do
+				if k~=1 then
+					range = vec_sub(touch,v)
+					range = m.sqrt(range.x^2+range.z^2)
+					near = (range<near[1] or near[2]==0) and {range,k} or near
+
+				end
+			end
+		end
+	elseif tapcount>0 then
+		if m.abs(touchy-mult)<rge then
+			if tapcount>7 then
+				rdrdist = m.max(rdrdist-.05,1)
+			elseif not tap then 
+				scl=m.max(scl-1,.05)
+			end
+
+		elseif m.abs(touchy-mult*2)<rge then
+			if tapcount>7 then
+				rdrdist = m.min(rdrdist+.05,60)
+			elseif not tap then 
+				scl=scl+1
+			end
+
+		elseif m.abs(touchy-mult*4)<rge then
+			tracks={0}
+			scl=ret
+			ma=set
+
+		end
+	end
+
+	tapcount = tap and tapcount+1 or 0 
+	tap = IB(2)
+
+	if IB(3) and not last then
+		if near[2]~=0 then
+			if stt==1 then
+				targets[1] = {near[2],0}
+			else
+				t(targets,{near[2],count})
+				count=count+1
+			end
+		end
+
+	end
+	last = IB(3)
+
+--Output Targets In Cycle
+	out = out<#targets and out+1 or 1
+	send = targets[out]
+	if send~=nil and tracks[send[1]]~=nil then
+		ON(4,send[2])
+		send = tracks[send[1]]
+		ON(1,send.x)
+		ON(2,send.y)
+		ON(3,send.z)
+
+	elseif #targets>0 then
+		table.remove(targets[out])--remove selected target if track is lost
+
+	end
+
+	ON(5,scl)
+	ON(8,m.atan(Zn.x,Zn.z))
+	ON(9,mpos.x)
+	ON(10,mpos.z)
+	ON(11,rdrdist)
+
+end
+
+
+function onDraw()
+	for k,v in pairs(tracks) do
+		s.setColor(196,12,16)
+		if k~=1 then
+			for i,j in pairs(targets) do
+				if j[1]==k then
+					s.setColor(255,0,0)
+					break
+
+				end
+			end
+			local v = vec_mult(vec_sub(v,mpos),1/mscl)
+			if (mx+v.x)>8 then
+				s.drawText(mx+v.x,mz-v.z,"+")
+
+			end
+		end
+	end
+
+--Selected Targets
+	s.setColor(255,0,0)
+	if tracks[near[2]]~=nil then
+		v = vec_mult(vec_sub(tracks[near[2]],mpos),1/mscl)
+		s.drawText(mx+v.x-3,mz-v.z,"[]")
+	end
+	
+	
+end
+
