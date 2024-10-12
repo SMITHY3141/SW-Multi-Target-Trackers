@@ -1,0 +1,400 @@
+```Lua
+--By SMITHY, Track-While-Scan Radar
+--SHORTHAND NOTATIONS
+m=math
+s=screen
+tau=m.pi*2
+t=table.insert
+IN=input.getNumber
+IB=input.getBool
+ON=output.setNumber
+PN=property.getNumber
+
+
+--VECTOR FUNCTIONS
+vec=function(x,y,z) return {x=x,y=y,z=z} end
+function vec_add(A,B) return vec(A.x+B.x,A.y+B.y,A.z+B.z) end
+function vec_sub(A,B) return vec(A.x-B.x,A.y-B.y,A.z-B.z) end
+function vec_mult(A,n) return vec(A.x*n,A.y*n,A.z*n) end
+function vec_div(A,n) return vec(A.x/n,A.y/n,A.z/n) end
+function vec_length(vec) return m.sqrt(vec.x*vec.x+vec.y*vec.y+vec.z*vec.z) end
+function vec_2Len(vec) return m.sqrt(vec.x*vec.x+vec.z*vec.z) end
+function vec_cross(A,B) return vec(A.y*B.z-A.z*B.y,A.z*B.x-A.x*B.z,A.x*B.y-A.y*B.x) end
+
+function lopatin(a) --Hungarian Algorithm solves for the smallest combination of distances
+	local n = #a
+	local m = #a[1] -- TODO !! if 0
+	local INF = 100000000
+	
+	local function vec(size, val)
+		local v = {}
+		for i = 1, size do v[i] = val end
+		return v  
+	end
+	
+	local u = vec(n+1,0)
+	local v = vec(m+1,0)
+	local p = vec(m+1,1)
+	local way = vec(m+1,0)
+	
+	for i = 1, n do
+		p[1] = i
+		local j0 = 1
+		local minv = vec(m+1, INF)
+		local used = vec(m+1, false)
+		
+		repeat
+			used[j0] = true
+			local i0 = p[j0]
+			local delta = INF
+			local j1
+			for j = 2, m do
+				if used[j] ~= true then
+					local cur = a[i0][j]-u[i0]-v[j]
+					if cur < minv[j] then
+						minv[j] = cur
+						way[j] = j0
+					end
+					if minv[j] < delta then
+						delta = minv[j]
+						j1 = j
+					end	
+				end
+			end
+			for j = 1, m do
+				if used[j] == true then
+					u[p[j]] = u[p[j]] + delta
+					v[j] = v[j] - delta 
+				else
+					minv[j] = minv[j] - delta
+				end 
+				j0=j1
+			end
+		until p[j0] == 1
+		
+		repeat 
+			local j1 = way[j0]
+			p[j0] = p[j1]
+			j0 = j1
+		until j0 == 1  
+	end
+	
+	local ans = {}
+	for j=2, m do
+		ans[p[j]] = j
+	end
+	return ans
+end
+
+--SET INITIAL VARIABLES
+set=vec(0,0,0)
+tgt,targets,tick,tracks,list={},{},{0},{0},{0} --[[ tgt is a filter for the gps points of newly detected targets; 
+													targets is a list of selected tracks; 
+													tick is for track timeout; 
+													list holds all the gps coords for new detections before updating tracks
+													
+													Some must have a 0 at the first index, because the lopatin() solver assumes it]]
+					
+
+rdrdist=PN("Max Range(Km)")
+minrng=PN("Min Range(m)")
+timeout=PN("Timeout") --Removes targets if not detecteed for a certain number of sweeps
+stt=PN("M") --Set to 1 if you only want to output one target at a time
+sep=PN("S") --Prevents track seduction, this can be a problem if you lose a lock on one target, but acquire a different target on the other side of the map. Normally, the algorithm doesn't care how far they are away, it'll update the old track with the new target. S will limit the TWS, by default it's limited to 900 metres, but you should increase this as you increase radar range.
+for i = 1,5 do
+	tgt[i] = set
+
+end
+
+--UI Slew and Zoom Stuff
+lx = PN("X")*32
+lz = PN("Y")*32
+gz = lz/2
+r=gz-3
+gx=4.5+lx/2
+ma=set
+scl=rdrdist+0.3
+mult=lz/5
+rge=mult/2
+
+out=0 --Used for outputting targets
+count=1
+
+lsweep=0
+lspd=0
+save = {}
+
+function onTick()
+    rx,ry,rz=IN(28),IN(29),IN(30)--Radar Orientation
+    cx,cy,cz=m.cos(rx),m.cos(ry),m.cos(rz)
+    sx,sy,sz=m.sin(rx),m.sin(ry),m.sin(rz)
+    Xn = vec(cy*cz,cy*sz,-sy)--right
+    Yn = vec(-cx*sz+sx*sy*cz,cx*cz+sx*sy*sz,sx*cy)--up
+	Zn = vec_cross(Xn,Yn)--forward
+
+	mpos = vec(IN(25),IN(26),IN(27))--IN(26) y is upwards
+
+	sweep = IN(24)
+	spd = (sweep-lsweep)>0
+
+--UI MAP AND SLEW
+	ma = vec_add(ma,vec_mult(vec(IN(21),0,IN(22)),50*scl))
+	mx = mpos.x+ma.x
+	mz = mpos.z+ma.z
+	ON(6,mx)
+	ON(7,mz)
+	mscl=scl/(r/lx)
+	aposx,aposz=map.screenToMap(mx,mz,mscl,lx,lz,lx-gx,lz-gz)
+	mx,mz=map.mapToScreen(aposx,aposz,mscl,lx,lz,mpos.x,mpos.z)
+	touchx = IN(31)
+	touchy = IN(32)
+	mscl=scl*1000/r
+	touch = vec_add(vec_mult(vec(touchx-mx,0,mz-touchy),mscl),mpos)
+
+--NEW DETECTIONS
+	for i = 1,5 do
+ --Calculate Target Coordinates in World Space
+		j = i*4
+		tsd = IN(j)
+		radarh,radarv,dist=IN(j-2)*tau,IN(j-1)*tau,IN(j-3)
+
+		save[i] = tsd==0 and {Xn,Yn,Zn} or save[i] --In game, whenever time since detection is increasing a snapshot of the radar data is taken and random noise is added, these values do not care about radar orientation. When tsd resets to 0 then the game takes another snapshot. None of this makes any sense, but this is how it's calculated in game. So to filter using tsd you have to save the radar orientation from when it first starts counting.
+
+		hlen = dist*m.cos(radarv)
+		radar = vec(m.sin(radarh)*hlen,m.sin(radarv)*dist,m.cos(radarh)*hlen)
+		radar = vec_add(vec_add(vec_mult(save[i][1],radar.x),vec_mult(save[i][2],radar.y)),vec_mult(save[i][3],radar.z))
+
+  --Moving Average Filter
+		if tsd~=0 then 
+			tgt[i] = vec_add(tgt[i],vec_div(vec_sub(radar,tgt[i]),tsd))
+
+ --Add Detection To List 
+		elseif vec_length(tgt[i])>minrng then 
+			tgt[i] = vec_add(tgt[i],mpos)
+			for k,v in ipairs(list) do --detects if we've already detected any targets at this point, in which case replace the old detection (can happen when the radar detects the same target over multiple ticks)
+				if k~=1 then
+					local range = vec_length(vec_sub(tgt[i],v))
+					if range<110*m.max(range/9000,1) then
+						list[k]=tgt[i]
+						tgt[i]=nil
+						break
+
+					end
+				end
+			end
+			if tgt[i]~=nil then --otherwise if there are no other detections near it, add this detection to a temporary list 
+				if tgt[i].x~=0 then
+					t(list,tgt[i])
+
+				end
+			end
+			tgt[i]=set
+
+		end
+	end
+
+--TRACK ASSIGNMENT MANAGEMENT
+	if spd~=lspd then --Only activates for a single tick, whenever the radar changes sweep direction
+		munkres,maxlen,minlen={},0,0
+
+ --Calculate Table Length
+		for k,v in pairs(tracks) do 
+			maxlen = m.max(k,maxlen)
+			minlen = minlen+1
+
+		end
+
+ --[[Construct Detection-Track Distance Matrix
+	 The distance from each track to every new detection. Lopatin() requires that the first row and column must be zero.
+	 If you had two existing tracks and 3 new detections (stored in list{}), the table should end up looking like this:
+	 a={{0,0,0,0},
+	    {0,4,5,3},
+	 	{0,6,4,3}}
+	 
+	 The hungarian algorithm also requires that the #rows be equal or greater than the #columns. If that is the case we'll have to flip rows and columns
+ ]]
+		flip = #list>=minlen
+		for k=1,(flip and maxlen or #list) do
+			local row = {}
+			if flip then
+				if tracks[k]~=nil then
+					row[-1] = k
+					for l,o in ipairs(list) do
+						row[l] = (k == 1 or l == 1) and 0 or vec_length(vec_sub(o,tracks[k]))
+
+					end
+					t(munkres,row)
+				end
+			else
+				step = 1
+				munkres[-1] = {}
+				for v = 1,maxlen do
+					if tracks[v]~=nil then
+						munkres[-1][step] = v
+						row[step]=(k == 1 or v == 1) and 0 or vec_length(vec_sub(list[k],tracks[v]))
+						step=step+1
+
+					end
+				end
+				t(munkres,row)
+			end
+		end
+
+ --Solve for Closest Targets (for an nxm matrix: n>=m, (n and m)>1, and the first row and column must be all zeroes)
+		ans =  #list~=1 and lopatin(munkres) or {0}
+ --[[For each track, this'll tell you which detection is closest without conflicting with other tracks.
+	If you want to see how this is outputted you could do the following:
+		cost = 0
+		for row,col in pairs(ans) do
+    		print("row "..(row-1).."; col "..(col-1))
+    		cost = cost + a[row][col]
+
+		end
+		print(cost)
+	]]
+
+ --Update Track Positions
+		for row,col in pairs(ans) do
+			if row~=1 then
+				if munkres[row][col]<sep then --if the distance is less than the maximum allowed distance then the track is updated with the detection
+				if flip then
+					row = munkres[row][-1]
+					tracks[row] = vec(list[col].x,list[col].y,list[col].z)
+					list[col] = nil
+					tick[row] = 0
+
+				else
+					col = munkres[-1][col]
+					tracks[col] = vec(list[row].x,list[row].y,list[row].z)
+					tick[col] = 0
+
+				end
+				end
+			end
+		end
+
+ --Add New Tracks
+		if flip then
+			for k,v in pairs(list) do
+				if k~=1 then
+					t(tracks,v)
+					t(tick,0)
+
+				end
+			end
+		end
+		list = {0}
+
+ --Calculate Track Timeouts
+		for k,v in pairs(tick) do
+			if k~=1 then
+				tick[k] = v+1
+				if v>timeout then
+					tracks[k]=nil
+					tick[k]=nil
+
+				end
+			end
+		end
+	end
+
+--TARGET SELECTION
+ --Select Target
+	near = {0,0}
+	if tap and touchx>9 then
+		for k,v in pairs(tracks) do --finds which track is closest to the cursor
+			if k~=1 then
+				local range = vec_2Len(vec_sub(touch,v))
+				near = (range<near[1] or near[2]==0) and {range,k} or near
+
+			end
+		end
+	elseif tap then
+		if m.abs(touchy-mult)<rge then
+			scl=m.max(scl-0.05,1)
+
+		elseif m.abs(touchy-mult*2)<rge then
+			scl=scl+0.05
+
+		elseif m.abs(touchy-mult*3)<rge then
+			scl=rdrdist+0.3
+			ma=set
+
+		elseif m.abs(touchy-mult*4)<rge then
+			tracks={0}
+
+		end
+	end
+	tap = IB(1)
+
+	if IB(2) and not last then --if spacebar is pressed, the selected track is added to a list
+		if near[2]~=0 then
+			if stt==1 then
+				targets[1] = {near[2],0}
+			else
+				t(targets,{near[2],count})
+				count=count+1
+			end
+		end
+
+	end
+	last = IB(2)
+	for k,v in pairs(targets) do --If any tracks are lost, then the selected target is also removed
+		if tracks[v[1]]==nil then
+			table.remove(targets,k)
+
+		end
+	end
+
+--Output Targets In Cycle
+	out = out<=#targets and out or 1
+	send = targets[out]
+	if send~=nil and tracks[send[1]]~=nil then
+		ON(4,send[2]) --order of which track was added to the list first
+		send = tracks[send[1]]
+		ON(1,send.x)
+		ON(2,send.y)
+		ON(3,send.z)
+	end
+	out = out+1
+
+	--UI stuff for the other script
+	ON(5,scl)
+	ON(8,m.atan(Zn.x,Zn.z))
+	ON(9,mpos.x)
+	ON(10,mpos.z)
+	ON(11,sweep)
+
+	lsweep=sweep
+	lspd=spd
+end
+
+
+function onDraw()
+	for k,v in pairs(tracks) do
+		s.setColor(196,12,16)
+		if k~=1 then
+			for i,j in pairs(targets) do --Has this track been launched on?
+				if j[1]==k then
+					s.setColor(255,0,0)
+					break
+
+				end
+			end
+		local v = vec_div(vec_sub(v,mpos),mscl)
+			if (mx+v.x)>8 then
+			s.drawText(mx+v.x,mz-v.z,k-1)
+			end
+
+		end
+	end
+
+	s.setColor(255,0,0)
+
+	if tracks[near[2]]~=nil then --Current selected target
+		v = vec_div(vec_sub(tracks[near[2]],mpos),mscl)
+		s.drawRect(mx+v.x-2.5,mz-v.z-2.5,7,8)
+	end
+end
+
+```
