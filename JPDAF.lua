@@ -1,4 +1,5 @@
 --By SMITHY, Joint Probabilistic Data Association Filter 2024
+--Please see here for the implementation: https://steamcommunity.com/sharedfiles/filedetails/?id=3388742860&searchtext=
 
 --To Do:
 --Optimisation:
@@ -240,7 +241,7 @@ function onTick()
 	end
 
 	sweep = (IN(29)+0.5)%1
-	if sweep<lsweep or complete == false then
+	if sweep<lsweep or complete == false then --only activates once whenever the radar completes a full sweep, complete ==false isn't needed anymore (used to be used for iterative search functionality)
 		srt = {} --same as T, except all nil values removed
 		nmatch = {} --used to check if a return has been assigned to any tracks
 		posterior = {} --Weight used in the state update weighted-average, posterior[2][3] would be the probability that track 2 is assigned to measurement 3
