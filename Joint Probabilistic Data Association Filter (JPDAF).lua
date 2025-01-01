@@ -277,7 +277,6 @@ function onTick()
 				V1 = mat_mult(mat_mult(mat_trans(t.V[i]),pp_i),t.V[i])[1][1] --Number of standard deviations innovation is away
 				if V1<gate then --Likelihood/validation gate, if innovation mahalanobis distance is less than x stdevs away
 					table.insert(t.G,{i,m.exp(-0.5*V1)/m.sqrt(m.abs(pp_d)*tau^2)}) --add likelihood to table specific to that track
-					nmatch[i] = false --if a return is never set to false we know it wasn't assigned to any tracks. 
 
 				end
 			end
@@ -297,6 +296,7 @@ function onTick()
 					posterior[k][i] = posterior[k][i]*(sum~=0 and 1/sum or 0) --normalize posterior matrix
 					t.beta = t.beta+posterior[k][i] -- 1 - t.beta would be the probability that the track is assigned to cluttere
 
+					nmatch[i] = nmatch[i]~=nil and (nmatch[i] + posterior[k][i]) or posterior[k][i]
 					Z = mat_op(Z,mat_op(t.V[i],posterior[k][i]),0) --weighted innovation
 
 				end
@@ -349,9 +349,8 @@ function onTick()
 			end
 			--Track Initiation 
 			for i = 1,nmeasure do
-				if nmatch[i]~=false and #srt<max_tgt then
+				if nmatch[i]<0.001 and #srt<max_tgt then
 					T[#T+1] = {X=returns[i],Pp=mat_op(I,cov)}
-					count = count+1
 					break
 
 				end
@@ -359,7 +358,6 @@ function onTick()
 		else
 			if nmeasure>0 then
 				T[1] = {X=returns[1],Pp=mat_op(I,cov)}
-				count=2
 
 			end
 		end
