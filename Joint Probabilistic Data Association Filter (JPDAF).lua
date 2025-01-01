@@ -248,6 +248,7 @@ function onTick()
 		nmeasure = #returns --not really needed anymore, but it used to be used in the iterative version since some returns may be added after the iterative search began
 		for k,t in pairs(T) do
 			table.insert(srt,k)
+			t.beta = 0
 			--State Process Noise Prediction
 			t.Pp = mat_op(t.Pp,Q,0)
 
@@ -291,7 +292,6 @@ function onTick()
 
 			complete = true
 			for k,t in pairs(T) do
-				t.beta = 0
 				Z = mat_op(returns[1],0)
 				for i = 1,#t.V do
 					posterior[k][i] = posterior[k][i]*(sum~=0 and 1/sum or 0) --normalize posterior matrix
