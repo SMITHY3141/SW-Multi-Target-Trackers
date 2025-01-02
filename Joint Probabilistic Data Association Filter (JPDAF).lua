@@ -136,6 +136,7 @@ max_tgt = PN("Max Targets")
 gap = PN("Sweep Period (Ticks)")
 cov = PN("Initial Variance")
 gate = PN("Gate Size")
+threshold = PN("Track Threshold")
 
 tws = PB("Output XYZ:")
 trails = PB("Trails")
@@ -349,7 +350,7 @@ function onTick()
 			end
 			--Track Initiation 
 			for i = 1,nmeasure do
-				if nmatch[i]<0.001 and #srt<max_tgt then
+				if nmatch[i]<threshold and #srt<max_tgt then
 					T[#T+1] = {X=returns[i],Pp=mat_op(I,cov)}
 					break
 
