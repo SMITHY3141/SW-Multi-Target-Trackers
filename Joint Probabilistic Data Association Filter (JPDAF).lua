@@ -3,17 +3,14 @@
 
 --To Do:
 --Optimisation:
-	--Iterative search
 	--clustering optimisation, might be able to do seperate searches for clusters of tracks distant from each other
 
 --Revise track initiation and deletion:
 	--handle cases where tracks coalesce
-	--Revise track initiation logic, make it more like track deletion
 
 --Time-since-detection filter
 
 --UI: 
---map zoom
 --target info
 
 --SHORTHAND NOTATIONS
@@ -67,11 +64,11 @@ function mat_op(A, B, op)
 	return r
 end
 function mat_inv(m) --3x3
-t1=m[2][2]*m[3][3]-m[3][2]*m[2][3]
-t2=m[2][3]*m[3][1]-m[2][1]*m[3][3]
-t3=m[2][1]*m[3][2]-m[3][1]*m[2][2]
-d=m[1][1]*t1+m[1][2]*t2+m[1][3]*t3
-id=1/d
+local t1=m[2][2]*m[3][3]-m[3][2]*m[2][3]
+local t2=m[2][3]*m[3][1]-m[2][1]*m[3][3]
+local t3=m[2][1]*m[3][2]-m[3][1]*m[2][2]
+local d=m[1][1]*t1+m[1][2]*t2+m[1][3]*t3
+local id=1/d
 return {
 	{t1*id,(m[1][3]*m[3][2]-m[1][2]*m[3][3])*id,(m[1][2]*m[2][3]-m[1][3]*m[2][2])*id},
 	{t2*id,(m[1][1]*m[3][3]-m[1][3]*m[3][1])*id,(m[2][1]*m[1][3]-m[1][1]*m[2][3])*id},
@@ -102,7 +99,7 @@ function mat_eigen(matrix) --chatgpt wrote most of this
 	return {m.sqrt(value[1]*gate), m.sqrt(value[2]*gate)}, vector
 end
 
-function build(layer, used, prob) --Finds all feasible joint events. Starts at the first track (layer) and assigning it a possible radar return, then moves to the next layer and assigns another non-conflicting radar return. At the same time it finds the product of all the liklihoods to find the probability that a joint event may occur.
+--[[function build(layer, used, prob) --Finds all feasible joint events. Starts at the first track (layer) and assigning it a possible radar return, then moves to the next layer and assigns another non-conflicting radar return. At the same time it finds the product of all the liklihoods to find the probability that a joint event may occur.
 	if layer > #srt then
 		for i = 1,nmeasure do
 			if used[i]~=nil then
@@ -126,8 +123,38 @@ function build(layer, used, prob) --Finds all feasible joint events. Starts at t
 			end
 		end
 	end
-end
+end--]]
+function build(layer, detection, block, used, prob)
+	if layer > #srt then
+		for i = 1,#returns do
+			if used[i]~=nil then --add event probability to posterior[track][detection] (probability of association)
+				posterior[used[i] ][i] = posterior[used[i] ][i] + prob
 
+			end
+		end
+		sum = sum + prob --used to normalise later
+	else
+		if block ~= layer then
+			build(layer + 1, detection, block, used, prob*miss)
+
+			for row = 1,#T[srt[layer] ].G do --#returns
+				local data = T[srt[layer] ].G[row]
+				if data[1] ~= detection and used[data[1] ]==nil then
+					used[data[1] ] = srt[layer]
+					build(layer + 1, detection, block, used, prob*(data[2] > 0 and data[2] or miss))
+					used[data[1] ] = nil
+
+				end
+			end
+		else
+			used[detection] = srt[layer]
+			local data = T[srt[layer] ].G[#T[srt[layer] ].G][2]
+			build(layer + 1, detection, block, used, prob*(data>0 and data or miss))
+			used[detection] = nil
+
+		end
+	end
+end
 
 
 max_rng = PN("Max Range") --Used for UI only
@@ -137,6 +164,7 @@ gap = PN("Sweep Period (Ticks)")
 cov = PN("Initial Variance")
 gate = PN("Gate Size")
 threshold = PN("Track Threshold")
+timeout = PN("Timeout")
 
 tws = PB("Output XYZ:")
 trails = PB("Trails")
@@ -169,7 +197,6 @@ for i = 1,6 do
 	end
 end
 
-h=1/60
 Q = mat_op(Q,PN("Process Noise")) --990
 F = mat_op(I,1)
 for i = 4,6 do
@@ -230,67 +257,39 @@ function onTick()
 		if Z[1]>min_rng and IN(ind) == 0 then
 			table.insert(returns,mat_op(mat_mult(O_t,{{Z[1]*m.cos(Z[3])*m.sin(Z[2])},{m.sin(Z[3])*Z[1]},{Z[1]*m.cos(Z[3])*m.cos(Z[2])}}),mpos,0)) --converts from local polar to global euclidean
 
-		end
-	end
-
---JOINT PROBABILISTIC DATA ASSOCIATION FILTER
-	for k,t in pairs(T) do
-		--State Prediction
-		t.X = mat_mult(F,t.X) --Predicts track position and velocity one tick in the future
-		t.Pp = mat_mult(mat_mult(F,t.Pp),F_t)
-
-	end
-
-	sweep = (IN(29)+0.5)%1
-	if sweep<lsweep or complete == false then --only activates once whenever the radar completes a full sweep, complete ==false isn't needed anymore (used to be used for iterative search functionality)
-		srt = {} --same as T, except all nil values removed
-		nmatch = {} --used to check if a return has been assigned to any tracks
-		posterior = {} --Weight used in the state update weighted-average, posterior[2][3] would be the probability that track 2 is assigned to measurement 3
-		nmeasure = #returns --not really needed anymore, but it used to be used in the iterative version since some returns may be added after the iterative search began
-		for k,t in pairs(T) do
-			table.insert(srt,k)
-			t.beta = 0
-			--State Process Noise Prediction
-			t.Pp = mat_op(t.Pp,Q,0)
-
-			--Measurement Noise Matrix (ignoring azimuth,elevation variance, and just assuming distance variance in 3D)
-			local t1 = {{t.X[1][1]-mpos[1][1]},{t.X[2][1]-mpos[2][1]},{t.X[3][1]-mpos[3][1]}}
-			t1 = (m.max(m.sqrt(t1[1][1]^2+t1[2][1]^2+t1[3][1]^2),Rnoise)*0.02)^2/12 -----T
-			R = {
-			{t1,0,0},
-			{0,t1,0},
-			{0,0,t1}
-			}
-
-			--Kalman Gain
-			t.pp = mat_op(mat_mult(mat_mult(H,t.Pp),H_t),R,0)
-			pp_i,pp_d = mat_inv(t.pp)
-			t.K = mat_mult(mat_mult(t.Pp,H_t),pp_i)
-
-			--Likelihood of association based on mahalanobis distance
-			t.V={}
-			t.G={}
-			posterior[k] = {} --initilise this for the event hyhpothesis search later
-			for i = 1,#returns do
+			for k,t in pairs(T) do --Validation Gate Calculations
+				local i = #returns
 				posterior[k][i] = 0
+				t.go = nil
 
 				t.V[i] = mat_op(returns[i],mat_mult(H,t.X),1) --Innovation
-				V1 = mat_mult(mat_mult(mat_trans(t.V[i]),pp_i),t.V[i])[1][1] --Number of standard deviations innovation is away
+				V1 = mat_mult(mat_mult(mat_trans(t.V[i]),t.pp_i),t.V[i])[1][1] --Number of standard deviations innovation is away
 				if V1<gate then --Likelihood/validation gate, if innovation mahalanobis distance is less than x stdevs away
-					table.insert(t.G,{i,m.exp(-0.5*V1)/m.sqrt(m.abs(pp_d)*tau^2)}) --add likelihood to table specific to that track
+					table.insert(t.G,{i,m.exp(-0.5*V1)/m.sqrt(m.abs(t.pp_d)*tau^2)}) --add likelihood to table specific to that track
+					t.go = true
+
+				end
+			end
+			--Event Hypothesis Search
+			for i = 1,#srt do
+				if T[srt[i] ].go then
+					build(1,#returns,i,{},1)
 
 				end
 			end
 		end
+	end
 
+--JOINT PROBABILISTIC DATA ASSOCIATION FILTER
 
-		--Kalman Filter State Update, and Event Hypothesis Search
-		complete = nmeasure==0 or #srt==0
+	sweep = (IN(29)+0.5)%1
+	if sweep<lsweep then --only activates once whenever the radar completes a full sweep
+		--Kalman Filter State Update
+		if srt == nil then
+			srt = {}
+		end
+		complete = #returns==0 or #srt==0
 		if not complete then
-			sum = 0
-			build(1, {}, 1) --event hypothesis search
-
-			complete = true
 			for k,t in pairs(T) do
 				Z = mat_op(returns[1],0)
 				for i = 1,#t.V do
@@ -301,6 +300,7 @@ function onTick()
 					Z = mat_op(Z,mat_op(t.V[i],posterior[k][i]),0) --weighted innovation
 
 				end
+
 
 				--Covariance update
 				t.Pp = mat_op(t.Pp,mat_op(mat_mult(mat_mult(t.K,t.pp),mat_trans(t.K)),t.beta),1)
@@ -324,15 +324,16 @@ function onTick()
 					end
 				end
 			end
-		end
+		end--]]
 
+		--Track Management
 		if #srt~=0 then
 			--Track Deletion
 			delete = {}
 			for i = 1,#srt do
 				local t = srt[i]
 				if T[t].beta~=nil then
-					if T[t].beta<0.01 then --nil error here for some reason
+					if T[t].beta<0.05 then --nil error here for some reason
 						T[t].time = T[t].time ~= nil and T[t].time+1 or 0
 						if T[t].time>3 then
 							delete[i] = t 
@@ -349,7 +350,7 @@ function onTick()
 
 			end
 			--Track Initiation 
-			for i = 1,nmeasure do
+			for i = 1,#returns do
 				if nmatch[i]<threshold and #srt<max_tgt then
 					T[#T+1] = {X=returns[i],Pp=mat_op(I,cov)}
 					break
@@ -357,12 +358,48 @@ function onTick()
 				end
 			end
 		else
-			if nmeasure>0 then
+			if #returns>0 then
 				T[1] = {X=returns[1],Pp=mat_op(I,cov)}
 
 			end
 		end
+
+		nmatch = {} --used to check if a return has been assigned to any tracks
+		posterior = {} --Weight used in the state update weighted-average, posterior[2][3] would be the probability that track 2 is assigned to measurement 3
+		srt = {} --keeps track of T (which may have nil values)
+		--Kalman Prediction
+		for k,t in pairs(T) do
+			table.insert(srt,k)
+			t.beta = 0
+
+			--State Prediction
+			t.X = mat_mult(F,t.X) --Predicts track position and velocity one tick in the future
+			t.Pp = mat_op(mat_mult(mat_mult(F,t.Pp),F_t),Q,0)
+
+			--Measurement Noise Matrix (ignoring azimuth,elevation variance, and just assuming distance variance in 3D)
+			local t1 = (m.max(m.sqrt((t.X[1][1]-mpos[1][1])^2+(t.X[2][1]-mpos[2][1])^2+(t.X[3][1]-mpos[3][1])^2),Rnoise)*0.02)^2/12 -----T
+			R = {
+			{t1,0,0},
+			{0,t1,0},
+			{0,0,t1}
+			}
+
+			--Kalman Gain
+			t.pp = mat_op(mat_mult(mat_mult(H,t.Pp),H_t),R,0)
+			t.pp_i,t.pp_d = mat_inv(t.pp)
+			t.K = mat_mult(mat_mult(t.Pp,H_t),t.pp_i)
+			
+			--Likelihood of association based on mahalanobis distance
+			t.V={}
+			t.G={}
+			posterior[k] = {} --initilise this for the event hyhpothesis search later
+
+		end
+		sum = 0
 		returns = {}
+
+		--Event Hypothesis Search (all tracks assigned to clutter)
+		build(1, 0, 0, {}, 1)
 
 	end
 
@@ -420,7 +457,7 @@ function onTick()
 		out = out<=#launch and out or 1
 		if T[launch[out][1] ]~= nil then
 			send = T[launch[out][1] ]
-			if #send.X>3 then
+			if #send.X>timeout then
 				for i = 1,6 do
 					ON(i,send.X[i][1])
 		
@@ -443,7 +480,7 @@ function drawElp(x, y, a, b, tilt) --merge this with drawCircle at some point
 	for i = 0, 8 do
 		px_, py_ = a * m.cos(ang * i), b * m.sin(ang * i)
 		px_, py_ = x + m.cos(tilt)*px_+m.sin(tilt)*py_, y + m.sin(tilt)*px_-m.cos(tilt)*py_
-		screen.drawLine(px_, py_, px, py)
+		s.drawLine(px_, py_, px, py)
 		px, py = px_, py_
 
 	end
@@ -454,7 +491,7 @@ function drawCircle(x, y, r, split)
 		if i%2 == 0 or not split then
 			local i = step*i-hdg
 			local step = step/2
-			screen.drawLine(x+math.cos(i-step)*r,y+math.sin(i-step)*r,x+math.cos(i+step)*r,y+math.sin(i+step)*r)
+			s.drawLine(x+math.cos(i-step)*r,y+math.sin(i-step)*r,x+math.cos(i+step)*r,y+math.sin(i+step)*r)
 
 		end
 	end
@@ -491,9 +528,9 @@ function onDraw()
 		s.setColor((100-10*k)%255,(21*k)%255,120/k)
 		local L = mat_mult(O,mat_op({{t.X[1][1]},{t.X[2][1]},{t.X[3][1]}},mpos,1)) --anytime you see this I'm converting from global space to local x,y,z
 		if t.launch~=nil then
-			s.drawText(gx+L[1][1]*mscl-1,gz-L[3][1]*mscl-2,"X")
-		else
 			s.drawText(gx+L[1][1]*mscl-1,gz-L[3][1]*mscl-2,"*")
+		else
+			s.drawText(gx+L[1][1]*mscl-1,gz-L[3][1]*mscl-2,"X")
 		end
 
 
