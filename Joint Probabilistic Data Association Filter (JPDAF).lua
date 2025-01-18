@@ -196,7 +196,7 @@ for i = 1,6 do
 		end
 	end
 end
-
+h=1/60
 Q = mat_op(Q,PN("Process Noise")) --990
 F = mat_op(I,1)
 for i = 4,6 do
@@ -248,14 +248,19 @@ function onTick()
 	{-cx*sz+sx*sy*cz,cx*cz+sx*sy*sz,sx*cy},
 	{sx*sz+cx*sy*cz,-sx*cz+cx*sy*sz,cx*cy}
 	}
-	O_t = mat_trans(O)
+	hdg = m.atan(O[3][1],O[3][3])
+	E = { --Rotation Matrix
+	{m.cos(hdg),0,-m.sin(hdg)},
+	{0,0,0},
+	{m.sin(hdg),0,m.cos(hdg)}
+	}
 
 --RADAR RETURN PROCESSING
 	for i = 1,5 do
 		local ind = 6+i*4
 		local Z = {IN(ind-3),IN(ind-2)*tau,IN(ind-1)*tau}
 		if Z[1]>min_rng and IN(ind) == 0 then
-			table.insert(returns,mat_op(mat_mult(O_t,{{Z[1]*m.cos(Z[3])*m.sin(Z[2])},{m.sin(Z[3])*Z[1]},{Z[1]*m.cos(Z[3])*m.cos(Z[2])}}),mpos,0)) --converts from local polar to global euclidean
+			table.insert(returns,mat_op(mat_mult(mat_trans(O),{{Z[1]*m.cos(Z[3])*m.sin(Z[2])},{m.sin(Z[3])*Z[1]},{Z[1]*m.cos(Z[3])*m.cos(Z[2])}}),mpos,0)) --converts from local polar to global euclidean
 
 			for k,t in pairs(T) do --Validation Gate Calculations
 				local i = #returns
@@ -280,6 +285,12 @@ function onTick()
 		end
 	end
 
+	for k,t in pairs(T) do
+		--State Prediction
+		t.X = mat_mult(F,t.X) --Predicts track position and velocity one tick in the future
+		t.Pp = mat_mult(mat_mult(F,t.Pp),F_t)
+
+	end
 --JOINT PROBABILISTIC DATA ASSOCIATION FILTER
 
 	sweep = (IN(29)+0.5)%1
@@ -291,6 +302,7 @@ function onTick()
 		complete = #returns==0 or #srt==0
 		if not complete then
 			for k,t in pairs(T) do
+				t.beta = 0
 				Z = mat_op(returns[1],0)
 				for i = 1,#t.V do
 					posterior[k][i] = posterior[k][i]*(sum~=0 and 1/sum or 0) --normalize posterior matrix
@@ -335,7 +347,7 @@ function onTick()
 				if T[t].beta~=nil then
 					if T[t].beta<0.05 then --nil error here for some reason
 						T[t].time = T[t].time ~= nil and T[t].time+1 or 0
-						if T[t].time>3 then
+						if T[t].time>timeout then
 							delete[i] = t 
 
 						end
@@ -370,11 +382,7 @@ function onTick()
 		--Kalman Prediction
 		for k,t in pairs(T) do
 			table.insert(srt,k)
-			t.beta = 0
-
-			--State Prediction
-			t.X = mat_mult(F,t.X) --Predicts track position and velocity one tick in the future
-			t.Pp = mat_op(mat_mult(mat_mult(F,t.Pp),F_t),Q,0)
+			t.Pp = mat_op(t.Pp,Q,0)
 
 			--Measurement Noise Matrix (ignoring azimuth,elevation variance, and just assuming distance variance in 3D)
 			local t1 = (m.max(m.sqrt((t.X[1][1]-mpos[1][1])^2+(t.X[2][1]-mpos[2][1])^2+(t.X[3][1]-mpos[3][1])^2),Rnoise)*0.02)^2/12 -----T
@@ -412,7 +420,7 @@ function onTick()
 		if m.abs(touchy-lz*.6-2)<6 and m.abs(m.abs(touchx-hx)-lx/16)<6 then
 			scl = touchx<hx and scl+.1 or m.max(scl-0.1,0.1)
 		elseif not lspress then
-			L = mat_op(mat_mult(O_t,{{(touchx-gx)/mscl},{0},{(gz-touchy)/mscl}}),mpos,0)
+			L = mat_op(mat_mult(mat_trans(E),{{(touchx-gx)/mscl},{0},{(gz-touchy)/mscl}}),mpos,0) --fix
 			near = {0,0}
 			for k,t in pairs(T) do
 				local rng = m.sqrt((t.X[1][1]-L[1][1])^2+(t.X[3][1]-L[3][1])^2)
@@ -426,8 +434,8 @@ function onTick()
 
 	press = IN(27) == 1
 	if near~=nil then
-		if near[1]~=0 and T[near[1]] ~=nil then
-			L = mat_mult(O,{{T[near[1]].X[1][1]-mpos[1][1]},{0},{T[near[1]].X[3][1]-mpos[3][1]}})
+		if near[1]~=0 and T[near[1]]~=nil then
+			L = mat_mult(E,{{T[near[1]].X[1][1]-mpos[1][1]},{0},{T[near[1]].X[3][1]-mpos[3][1]}}) --fix
 			slew = {L[1][1],L[3][1]}
 			if press and not lpress then
 				count1 = count1==nil and 1 or count1+1
@@ -457,7 +465,7 @@ function onTick()
 		out = out<=#launch and out or 1
 		if T[launch[out][1] ]~= nil then
 			send = T[launch[out][1] ]
-			if #send.X>timeout then
+			if #send.X>3 then
 				for i = 1,6 do
 					ON(i,send.X[i][1])
 		
@@ -496,10 +504,9 @@ function drawCircle(x, y, r, split)
 		end
 	end
 end
-comp = {"E","N","W","S"}
+comp = {"S","E","N","W"}
 function onDraw()
 	--Background
-	hdg = m.atan(O[1][1],O[1][3])
 	s.setColor(0,.074,3)
 	s.drawRectF(0,0,lx,lz)
 
@@ -526,7 +533,7 @@ function onDraw()
 	--Tracks
 	for k,t in pairs(T) do
 		s.setColor((100-10*k)%255,(21*k)%255,120/k)
-		local L = mat_mult(O,mat_op({{t.X[1][1]},{t.X[2][1]},{t.X[3][1]}},mpos,1)) --anytime you see this I'm converting from global space to local x,y,z
+		local L = mat_mult(E,mat_op({{t.X[1][1]},{t.X[2][1]},{t.X[3][1]}},mpos,1)) --anytime you see this I'm converting from global space to local x,y,z: fix
 		if t.launch~=nil then
 			s.drawText(gx+L[1][1]*mscl-1,gz-L[3][1]*mscl-2,"*")
 		else
@@ -538,7 +545,7 @@ function onDraw()
 		if gates and t.pp ~= nil then
 			FX = mat_mult(F,t.X)
 			values, vectors = mat_eigen(t.pp)
-			drawElp(gx+L[1][1]*mscl,gz-L[3][1]*mscl,values[1]*mscl,values[2]*mscl,m.atan(vectors[1][2],vectors[1][1])-hdg)
+			drawElp(gx+L[1][1]*mscl,gz-L[3][1]*mscl,values[1]*mscl,values[2]*mscl,m.atan(vectors[1][2],vectors[1][1])-hdg) --fix?
 
 		end
 	end
@@ -546,14 +553,14 @@ function onDraw()
 		--Trails
 		s.setColor(233,144,20)
 		for k,p in ipairs(list) do
-			local L = mat_mult(O,mat_op({{p[1][1]},{p[2][1]},{p[3][1]}},mpos,1))
+			local L = mat_mult(E,mat_op({{p[1][1]},{p[2][1]},{p[3][1]}},mpos,1)) --fix
 			s.drawText(gx+L[1][1]*mscl-1,gz-L[3][1]*mscl-3,".")
 	
 		end
 		--Returns
 		s.setColor(40,170,20)
 		for k,p in ipairs(returns) do
-			local L = mat_mult(O,mat_op({{p[1][1]},{p[2][1]},{p[3][1]}},mpos,1))
+			local L = mat_mult(E,mat_op({{p[1][1]},{p[2][1]},{p[3][1]}},mpos,1)) --fix
 			s.drawText(gx+L[1][1]*mscl-1,gz-L[3][1]*mscl-3,"+")
 	
 		end
