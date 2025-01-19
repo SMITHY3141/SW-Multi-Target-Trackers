@@ -124,35 +124,35 @@ end
 		end
 	end
 end--]]
+
 function build(layer, detection, block, used, prob)
 	if layer > #srt then
-		for i = 1,#returns do
-			if used[i]~=nil then --add event probability to posterior[track][detection] (probability of association)
-				posterior[used[i] ][i] = posterior[used[i] ][i] + prob
+		for i, track in pairs(used) do
+			posterior[track][i] = posterior[track][i] + prob
 
+		end
+		sum = sum + prob -- Used for normalization later
+		return
+	end
+	local G = T[srt[layer]].G
+	if block ~= layer then
+		build(layer + 1, detection, block, used, prob * miss)
+
+		for row = 1, #G do
+			local rowData = G[row]
+			local idx, probVal = rowData[1], rowData[2]
+			if idx ~= detection and not used[idx] then
+				used[idx] = srt[layer]
+				local adjustedProb = (probVal > 0 and probVal or miss)
+				build(layer + 1, detection, block, used, prob * adjustedProb)
+				used[idx] = nil
 			end
 		end
-		sum = sum + prob --used to normalise later
 	else
-		if block ~= layer then
-			build(layer + 1, detection, block, used, prob*miss)
-
-			for row = 1,#T[srt[layer] ].G do --#returns
-				local data = T[srt[layer] ].G[row]
-				if data[1] ~= detection and used[data[1] ]==nil then
-					used[data[1] ] = srt[layer]
-					build(layer + 1, detection, block, used, prob*(data[2] > 0 and data[2] or miss))
-					used[data[1] ] = nil
-
-				end
-			end
-		else
-			used[detection] = srt[layer]
-			local data = T[srt[layer] ].G[#T[srt[layer] ].G][2]
-			build(layer + 1, detection, block, used, prob*(data>0 and data or miss))
-			used[detection] = nil
-
-		end
+		used[detection] = srt[layer]
+		local adjustedProb = (G[#G][2] > 0 and G[#G][2] or miss)
+		build(layer + 1, detection, block, used, prob * adjustedProb)
+		used[detection] = nil
 	end
 end
 
@@ -294,7 +294,7 @@ function onTick()
 --JOINT PROBABILISTIC DATA ASSOCIATION FILTER
 
 	sweep = (IN(29)+0.5)%1
-	if sweep<lsweep then --only activates once whenever the radar completes a full sweep
+	if sweep<lsweep or sweep == lsweep then --only activates once whenever the radar completes a full sweep
 		--Kalman Filter State Update
 		if srt == nil then
 			srt = {}
@@ -302,7 +302,6 @@ function onTick()
 		complete = #returns==0 or #srt==0
 		if not complete then
 			for k,t in pairs(T) do
-				t.beta = 0
 				Z = mat_op(returns[1],0)
 				for i = 1,#t.V do
 					posterior[k][i] = posterior[k][i]*(sum~=0 and 1/sum or 0) --normalize posterior matrix
@@ -401,6 +400,7 @@ function onTick()
 			t.V={}
 			t.G={}
 			posterior[k] = {} --initilise this for the event hyhpothesis search later
+			t.beta = 0
 
 		end
 		sum = 0
