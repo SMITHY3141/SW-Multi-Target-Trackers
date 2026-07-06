@@ -1,4 +1,4 @@
-```Lua
+
 --By SMITHY, Track-While-Scan Radar
 --SHORTHAND NOTATIONS
 m=math
@@ -396,5 +396,3 @@ function onDraw()
 		s.drawRect(mx+v.x-2.5,mz-v.z-2.5,7,8)
 	end
 end
-
-```
